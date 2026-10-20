@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from api.routes import router
 from app import create_rag
+from unified_agent import create_unified_agent
 from Weather_Search.mcp_client.client import MCPClient
 
 
@@ -22,9 +23,15 @@ async def lifespan(app: FastAPI):
         await mcp_client.connect()
         app.state.mcp_client = mcp_client
 
+        print("\n[STARTUP] Initializing Unified Agent...")
+        app.state.unified_agent = create_unified_agent(
+            rag=app.state.rag,
+            mcp_client=app.state.mcp_client,
+        )
+
         print(
             "\n[STARTUP] Ready: RAG + OCR + "
-            "Weather MCP + Web Search"
+            "SQL Database + Weather MCP + Web Search"
         )
 
         yield
@@ -35,9 +42,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Four-Answer AI Assistant",
+    title="Unified AI Assistant",
     description=(
-        "Separate RAG, OCR, Weather Search, and Web Search answers."
+        "AI assistant with document search, OCR, SQL database, "
+        "weather MCP, and web search."
     ),
     lifespan=lifespan,
 )

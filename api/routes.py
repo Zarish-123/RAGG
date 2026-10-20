@@ -120,6 +120,38 @@ def is_web_question(question: str) -> bool:
     return any(term in q for term in terms)
 
 
+def is_sql_question(question: str) -> bool:
+    """Detect questions that should use the company SQL database."""
+
+    q = question.casefold()
+
+    terms = (
+        "employee",
+        "employees",
+        "salary",
+        "salaries",
+        "payroll",
+        "department",
+        "departments",
+        "project budget",
+        "project budgets",
+        "projects",
+        "company database",
+        "company records",
+        "total salary",
+        "average salary",
+        "highest salary",
+        "lowest salary",
+        "employee count",
+        "how many employees",
+        "list employees",
+        "employee names",
+        "who works",
+    )
+
+    return any(term in q for term in terms)
+
+
 # --------------------------------------------------
 # City extraction
 # --------------------------------------------------
@@ -160,7 +192,6 @@ def extract_city(question: str) -> str:
         "Berlin",
     )
 
-    # Match known city names first.
     for city in sorted(known_cities, key=len, reverse=True):
         if re.search(
             rf"\b{re.escape(city)}\b",
@@ -169,9 +200,6 @@ def extract_city(question: str) -> str:
         ):
             return city
 
-    # Generic fallback:
-    # "weather in Manchester"
-    # "temperature for Rome"
     match = re.search(
         r"\b(?:weather|temperature|forecast)"
         r"\s+(?:in|for|at)\s+"
@@ -188,8 +216,6 @@ def extract_city(question: str) -> str:
         if city:
             return city
 
-    # Alternative phrasing:
-    # "What is the weather like in Manchester right now?"
     match = re.search(
         r"\b(?:in|for|at)\s+"
         r"([A-Za-z][A-Za-z .'-]*?)"
@@ -213,15 +239,7 @@ def extract_city(question: str) -> str:
 # --------------------------------------------------
 
 def parse_weather_result(result: Any) -> Any:
-    """
-    Extract structured weather data from an MCP result.
-
-    Handles dictionaries, structuredContent, text content,
-    JSON strings, and MCP results that expose content blocks.
-    """
-
     if isinstance(result, dict):
-        # A tool may return a wrapper containing structured data.
         structured = result.get("structuredContent")
 
         if structured is None:
@@ -240,7 +258,6 @@ def parse_weather_result(result: Any) -> Any:
     if structured is not None:
         return parse_weather_result(structured)
 
-    # Some MCP responses contain a list of text blocks.
     content = getattr(result, "content", None)
 
     if content is not None:
@@ -264,7 +281,6 @@ def parse_weather_result(result: Any) -> Any:
         except json.JSONDecodeError:
             return result
 
-    # Last-resort support for model-like objects.
     model_dump = getattr(result, "model_dump", None)
 
     if callable(model_dump):
@@ -281,22 +297,12 @@ def parse_weather_result(result: Any) -> Any:
 # --------------------------------------------------
 
 def format_current_weather(data: Any, city: str) -> str:
-    """
-    Format current weather data as readable Markdown.
-
-    Expected fields:
-    city, country, time, temperature_c, feels_like_c,
-    humidity_percent, wind_speed_kmh, precipitation_mm,
-    conditions, is_day.
-    """
-
     if isinstance(data, str):
         try:
             data = json.loads(data)
         except json.JSONDecodeError:
             return data
 
-    # Handle a common wrapper format if the tool uses one.
     if isinstance(data, dict):
         for key in ("data", "weather", "result"):
             nested = data.get(key)
@@ -319,7 +325,6 @@ def format_current_weather(data: Any, city: str) -> str:
 
     temperature = data.get("temperature_c")
 
-    # Support alternate field names where practical.
     if temperature is None:
         temperature = data.get("temperature")
 
@@ -352,17 +357,12 @@ def format_current_weather(data: Any, city: str) -> str:
     country = data.get("country", "")
     actual_city = data.get("city") or city
 
-    # Do not invent missing temperature or conditions.
     if temperature is None or conditions is None:
         return (
             "The weather service did not return the required "
             "temperature and condition fields.\n\n"
             "**Received data:**\n```json\n"
-            + json.dumps(
-                data,
-                ensure_ascii=False,
-                indent=2,
-            )
+            + json.dumps(data, ensure_ascii=False, indent=2)
             + "\n```"
         )
 
@@ -396,7 +396,6 @@ def format_current_weather(data: Any, city: str) -> str:
             f"**Weather data timestamp:** {timestamp}",
         ])
 
-    # Include the day/night state only if it is available.
     is_day = data.get("is_day")
 
     if is_day is not None:
@@ -411,13 +410,6 @@ def format_current_weather(data: Any, city: str) -> str:
 # --------------------------------------------------
 
 def format_forecast_response(data: Any, city: str) -> str:
-    """
-    Basic forecast formatter.
-
-    The exact forecast schema depends on the weather MCP server,
-    so unknown fields are preserved instead of being discarded.
-    """
-
     if isinstance(data, str):
         try:
             data = json.loads(data)
@@ -439,7 +431,6 @@ def format_forecast_response(data: Any, city: str) -> str:
 
         title = f"## Weather Forecast for {location}"
 
-        # If the server has a list of forecast days, show each day.
         forecast_days = (
             data.get("forecast")
             or data.get("daily")
@@ -454,12 +445,7 @@ def format_forecast_response(data: Any, city: str) -> str:
                     lines.append(f"- {item}")
                     continue
 
-                date = (
-                    item.get("date")
-                    or item.get("time")
-                    or "Forecast"
-                )
-
+                date = item.get("date") or item.get("time") or "Forecast"
                 lines.append(f"### {date}")
 
                 for key, value in item.items():
@@ -469,10 +455,7 @@ def format_forecast_response(data: Any, city: str) -> str:
                     readable_key = key.replace("_", " ").capitalize()
 
                     if isinstance(value, (dict, list)):
-                        value = json.dumps(
-                            value,
-                            ensure_ascii=False,
-                        )
+                        value = json.dumps(value, ensure_ascii=False)
 
                     lines.append(f"- **{readable_key}:** {value}")
 
@@ -480,15 +463,10 @@ def format_forecast_response(data: Any, city: str) -> str:
 
             return "\n".join(lines).strip()
 
-        # Unknown forecast schema: preserve all returned data.
         return (
             title
             + "\n\n```json\n"
-            + json.dumps(
-                data,
-                ensure_ascii=False,
-                indent=2,
-            )
+            + json.dumps(data, ensure_ascii=False, indent=2)
             + "\n```"
         )
 
@@ -508,11 +486,6 @@ async def call_weather_tool(
     question: str,
     city: str,
 ) -> str:
-    """
-    Call the current-weather or forecast MCP tool,
-    then format the result for the frontend.
-    """
-
     forecast_requested = is_forecast_question(question)
 
     tool_name = (
@@ -529,21 +502,12 @@ async def call_weather_tool(
     print(f"[WEATHER] Selected tool: {tool_name}")
     print(f"[WEATHER] Requested city: {city}")
 
-    result = await mcp_client.call_tool(
-        tool_name,
-        arguments,
-    )
+    result = await mcp_client.call_tool(tool_name, arguments)
 
-    # Check MCP error before formatting.
     if getattr(result, "isError", False):
         error_data = parse_weather_result(result)
-
         print("[WEATHER] MCP error:", repr(error_data))
-
-        return (
-            "**Weather service error:**\n\n"
-            + str(error_data)
-        )
+        return "**Weather service error:**\n\n" + str(error_data)
 
     data = parse_weather_result(result)
 
@@ -573,54 +537,29 @@ def retrieve_ocr_documents(
     if retriever is None:
         return []
 
-    vector_store = getattr(
-        retriever,
-        "vector_store",
-        None,
-    )
-
-    documents = getattr(
-        vector_store,
-        "documents",
-        [],
-    )
-
-    ocr_indices = getattr(
-        rag,
-        "ocr_chunk_indices",
-        [],
-    )
+    vector_store = getattr(retriever, "vector_store", None)
+    documents = getattr(vector_store, "documents", [])
+    ocr_indices = getattr(rag, "ocr_chunk_indices", [])
 
     ocr_documents = [
         documents[index]
         for index in ocr_indices
-        if isinstance(index, int)
-        and 0 <= index < len(documents)
+        if isinstance(index, int) and 0 <= index < len(documents)
     ]
 
     if not ocr_documents:
         return retriever.retrieve(question, k)
 
-    candidates = retriever.retrieve(
-        question,
-        max(k * 3, 15),
-    )
-
+    candidates = retriever.retrieve(question, max(k * 3, 15))
     ocr_ids = {id(doc) for doc in ocr_documents}
 
-    matched = [
-        doc
-        for doc in candidates
-        if id(doc) in ocr_ids
-    ]
+    matched = [doc for doc in candidates if id(doc) in ocr_ids]
 
     if matched:
         return matched[:k]
 
-    # Fall back to the vector store if its interfaces support it.
     try:
         query_embedding = retriever.embedder.embed(question)
-
         semantic_results = vector_store.search(
             query_embedding,
             max(k * 5, 30),
@@ -687,11 +626,11 @@ You answer questions using the supplied OCR-extracted document text.
 
 Rules:
 - Use only the text provided below.
-- OCR text is valid evidence, but it may contain recognition errors.
+- OCR text may contain recognition errors.
 - Do not invent missing facts.
-- If the text answers the question, answer directly and clearly.
-- If the text does not contain the answer, say so briefly.
-- Do not discuss unrelated documents or external information.
+- Answer directly when evidence is available.
+- If the answer is absent, say so briefly.
+- Do not add unrelated external information.
 
 OCR document text:
 {context}
@@ -714,11 +653,56 @@ Answer:
 # --------------------------------------------------
 
 async def call_web_search(question: str) -> str:
-    # DDGS search is synchronous, so run it in a worker thread.
     return await asyncio.to_thread(
         search_web.invoke,
         {"query": question},
     )
+
+
+# --------------------------------------------------
+# SQL / unified-agent request
+# --------------------------------------------------
+
+async def call_sql_agent(
+    request: Request,
+    question: str,
+) -> str:
+    unified_agent = getattr(
+        request.app.state,
+        "unified_agent",
+        None,
+    )
+
+    if unified_agent is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Unified agent is not initialized.",
+        )
+
+    result = await unified_agent.ainvoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": question,
+                }
+            ]
+        },
+        config={"recursion_limit": 10},
+    )
+
+    messages = result.get("messages", [])
+
+    for message in reversed(messages):
+        if getattr(message, "type", None) != "ai":
+            continue
+
+        content = getattr(message, "content", "")
+
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+    return "The SQL agent did not return a readable answer."
 
 
 # --------------------------------------------------
@@ -738,17 +722,8 @@ async def ask_question(
             detail="Question cannot be empty.",
         )
 
-    rag = getattr(
-        http_request.app.state,
-        "rag",
-        None,
-    )
-
-    mcp_client = getattr(
-        http_request.app.state,
-        "mcp_client",
-        None,
-    )
+    rag = getattr(http_request.app.state, "rag", None)
+    mcp_client = getattr(http_request.app.state, "mcp_client", None)
 
     if rag is None:
         raise HTTPException(
@@ -758,14 +733,15 @@ async def ask_question(
 
     k = max(1, min(payload.k, 20))
 
-    # Priority routing:
-    # Weather -> OCR -> Web -> RAG.
+    # Route specific questions before the generic RAG fallback.
     if is_weather_question(question):
         selected_tool = "weather"
     elif is_ocr_question(question):
         selected_tool = "ocr"
     elif is_web_question(question):
         selected_tool = "web"
+    elif is_sql_question(question):
+        selected_tool = "sql"
     else:
         selected_tool = "rag"
 
@@ -780,20 +756,16 @@ async def ask_question(
         if selected_tool == "weather":
             city = extract_city(question)
 
-            print(f"[ROUTER] Extracted city: {city!r}")
-
             if not city:
                 answer = (
                     "Please mention the city, for example: "
                     "'What is the current weather in Islamabad?'"
                 )
-
             elif mcp_client is None:
                 answer = (
                     "Weather MCP client is not initialized. "
                     "Check the FastAPI startup and MCP connection."
                 )
-
             else:
                 answer = await call_weather_tool(
                     mcp_client=mcp_client,
@@ -823,7 +795,18 @@ async def ask_question(
             )
 
         elif selected_tool == "web":
-            answer = await call_web_search(question)
+            answer = to_text(
+                await call_web_search(question)
+            ).strip()
+
+            if not answer:
+                answer = "The web search returned no results."
+
+        elif selected_tool == "sql":
+            answer = await call_sql_agent(
+                request=http_request,
+                question=question,
+            )
 
         else:
             result = await asyncio.to_thread(
@@ -848,6 +831,9 @@ async def ask_question(
                 if doc is not None
             ]
 
+    except HTTPException:
+        raise
+
     except Exception as exc:
         print(
             f"[ERROR] {selected_tool} failed: "
@@ -859,7 +845,10 @@ async def ask_question(
             f"Details: {type(exc).__name__}: {exc}"
         )
 
-    print(f"[ROUTER] Final answer for {selected_tool}: {answer[:500]!r}")
+    print(
+        f"[ROUTER] Final answer for {selected_tool}: "
+        f"{answer[:500]!r}"
+    )
 
     return AnswerResponse(
         question=question,

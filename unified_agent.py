@@ -15,8 +15,10 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from Web_Search.langraph_agent.search_tools import search_web
 from database.sql_tool import sql_database_tool
 
+
 SYSTEM_PROMPT = """
-You are a unified AI assistant with three capabilities.
+You are a unified AI assistant with four capabilities:
+document search, web search, weather, and SQL database queries.
 
 DOCUMENT SEARCH
 - Use search_documents for questions about the user's PDFs and OCR.
@@ -57,6 +59,46 @@ WEATHER
 - Do not invent weather values or claim that rain is expected
   unless the returned data supports that conclusion.
 - If a field is missing, omit it instead of guessing.
+
+SQL DATABASE
+- Use query_sql_database for questions about company employees,
+  departments, salaries, projects, budgets, and company records.
+- The database is a separate source from the user's PDFs.
+- Available tables and columns:
+
+  departments:
+    department_id, department_name, location
+
+  employees:
+    employee_id, name, email, salary, department_id
+
+  projects:
+    project_id, project_name, budget, employee_id
+
+- Generate valid SQLite SELECT queries using the actual schema.
+- Use JOINs when information is required from multiple tables.
+- Use COUNT, SUM, AVG, MIN, MAX, GROUP BY, and ORDER BY
+  when appropriate for the question.
+- For questions asking for totals or counts, calculate them
+  using SQL rather than estimating from memory.
+- For questions asking for lists, retrieve the matching records.
+- Call the SQL tool and base answers on its actual results.
+- Never invent employees, salaries, project budgets, or records.
+- If the SQL tool reports an error, explain it honestly.
+- Never claim that a database query succeeded if it failed.
+- Do not use web search for questions answerable directly
+  from the company SQL database.
+- Do not attempt INSERT, UPDATE, DELETE, DROP, or other
+  database modification statements.
+
+TOOL SELECTION
+- Select the appropriate tool based on the user's question.
+- For company database questions, prioritize query_sql_database.
+- For PDF and OCR questions, prioritize search_documents.
+- For explicit internet searches, call search_web.
+- For weather questions, use the appropriate weather tool.
+- Do not call unrelated tools.
+- If multiple sources are genuinely required, use the relevant tools.
 
 ANSWER FORMATTING — STRICT RULES
 
@@ -103,11 +145,9 @@ For simple questions that need one direct answer, answer naturally
 without unnecessary headings.
 
 Apply these formatting rules to document, OCR, web search, weather,
-and general answers.
+SQL, and general answers.
 
 GENERAL
-- Choose tools based on the user's actual question.
-- Do not call unrelated tools.
 - Explain tool errors honestly.
 - Answer in the user's language.
 - Historical questions are allowed; do not refuse simply because
@@ -283,6 +323,73 @@ def is_explicit_web_search(question: str) -> bool:
     return any(trigger in text for trigger in triggers)
 
 
+def is_sql_question(question: str) -> bool:
+    """Identify questions that should use the company SQL database."""
+
+    text = question.casefold()
+
+    sql_keywords = (
+        "employee",
+        "employees",
+        "staff",
+        "salary",
+        "salaries",
+        "payroll",
+        "department",
+        "departments",
+        "project budget",
+        "project budgets",
+        "project name",
+        "project names",
+        "projects",
+        "budget",
+        "budgets",
+        "company database",
+        "company records",
+        "employee records",
+        "sql database",
+        "average salary",
+        "total salary",
+        "highest salary",
+        "lowest salary",
+        "highest-paid",
+        "highest paid",
+        "lowest-paid",
+        "lowest paid",
+    )
+
+    if any(keyword in text for keyword in sql_keywords):
+        return True
+
+    # Catch count/total questions when the company data is mentioned.
+    company_terms = (
+        "company",
+        "employees",
+        "staff",
+        "departments",
+        "projects",
+        "salaries",
+    )
+
+    count_terms = (
+        "how many",
+        "count",
+        "total",
+        "average",
+        "highest",
+        "lowest",
+        "maximum",
+        "minimum",
+        "list all",
+        "show all",
+    )
+
+    return (
+        any(term in text for term in company_terms)
+        and any(term in text for term in count_terms)
+    )
+
+
 # --------------------------------------------------
 # Unified agent
 # --------------------------------------------------
@@ -431,13 +538,17 @@ def create_unified_agent(rag, mcp_client):
         ),
     )
 
-    # Keep the actual imported search_web tool.
+    # --------------------------------------------------
+    # 3. Register all tools, including SQL
+    # --------------------------------------------------
+
     tools = [
         document_tool,
         search_web,
         location_tool,
         current_weather_tool,
         forecast_tool,
+        sql_database_tool,
     ]
 
     print(
@@ -446,7 +557,7 @@ def create_unified_agent(rag, mcp_client):
     )
 
     # --------------------------------------------------
-    # 3. LLM
+    # 4. LLM and dedicated tool bindings
     # --------------------------------------------------
 
     llm = ChatOllama(
@@ -456,8 +567,24 @@ def create_unified_agent(rag, mcp_client):
 
     llm_with_tools = llm.bind_tools(tools)
 
-    # Use a dedicated binding to request the web tool explicitly.
-    # This requires support from the installed Ollama/LangChain versions.
+    # Dedicated SQL binding.
+    # The fallback keeps the agent compatible with models/providers
+    # that do not support forced tool selection.
+    try:
+        sql_llm = llm.bind_tools(
+            [sql_database_tool],
+            tool_choice="query_sql_database",
+        )
+        print("[SQL ROUTER] Forced SQL tool binding enabled.")
+
+    except Exception as error:
+        print(
+            "[SQL TOOL BINDING WARNING] "
+            f"{type(error).__name__}: {error}"
+        )
+        sql_llm = llm.bind_tools([sql_database_tool])
+
+    # Dedicated binding for explicit web-search requests.
     try:
         web_search_llm = llm.bind_tools(
             tools,
@@ -471,7 +598,7 @@ def create_unified_agent(rag, mcp_client):
         web_search_llm = llm_with_tools
 
     # --------------------------------------------------
-    # 4. Weather response
+    # 5. Weather response
     # --------------------------------------------------
 
     async def answer_weather(
@@ -509,13 +636,13 @@ def create_unified_agent(rag, mcp_client):
         return AIMessage(content=response.content)
 
     # --------------------------------------------------
-    # 5. Explicit web-search response
+    # 6. Explicit web-search response
     # --------------------------------------------------
 
     async def answer_explicit_web_search(
         question: str,
     ):
-        """Make the model request search_web before answering."""
+        """Request search_web before answering."""
 
         print("\n[WEB ROUTER] Explicit web search detected.")
         print(f"[WEB ROUTER] Query: {question}")
@@ -543,7 +670,6 @@ def create_unified_agent(rag, mcp_client):
         print("Content:", response.content)
         print("Tool calls:", response.tool_calls)
 
-        # Verify that the model actually requested search_web.
         tool_calls = getattr(response, "tool_calls", []) or []
 
         has_web_call = any(
@@ -557,11 +683,63 @@ def create_unified_agent(rag, mcp_client):
                 "Check tool_choice support and search_web's name."
             )
 
-        # Let LangGraph's ToolNode execute the requested tool call.
+        # ToolNode executes the tool call and sends its result
+        # back to the model for the final answer.
         return response
 
     # --------------------------------------------------
-    # 6. Agent model node
+    # 7. Dedicated SQL response routing
+    # --------------------------------------------------
+
+    async def answer_sql_question(question: str):
+        """Force company database questions through the SQL tool."""
+
+        print("\n[SQL ROUTER] Company database question detected.")
+        print(f"[SQL ROUTER] Question: {question}")
+
+        sql_messages = [
+            SystemMessage(
+                content=(
+                    SYSTEM_PROMPT
+                    + "\n\nMANDATORY SQL ROUTING:\n"
+                    "This request concerns the company SQL database. "
+                    "You MUST call query_sql_database. Generate a valid "
+                    "SQLite SELECT query using only the actual schema "
+                    "listed in the system prompt. Use JOINs when needed. "
+                    "Never answer from memory. Do not generate INSERT, "
+                    "UPDATE, DELETE, DROP, or any modifying query. "
+                    "After the SQL tool returns, base your final answer "
+                    "on its actual result."
+                )
+            ),
+            HumanMessage(content=question),
+        ]
+
+        response = await sql_llm.ainvoke(sql_messages)
+
+        tool_calls = getattr(response, "tool_calls", []) or []
+
+        print("\n[SQL ROUTER] Model response:")
+        print("Content:", response.content)
+        print("Tool calls:", tool_calls)
+
+        has_sql_call = any(
+            call.get("name") == "query_sql_database"
+            for call in tool_calls
+        )
+
+        if not has_sql_call:
+            raise RuntimeError(
+                "The model did not call query_sql_database. "
+                "Check the SQL tool name and Ollama tool-calling support."
+            )
+
+        # Return the tool-call message. LangGraph's ToolNode will
+        # execute the SQL tool, then the agent will format its result.
+        return response
+
+    # --------------------------------------------------
+    # 8. Agent model node
     # --------------------------------------------------
 
     async def call_model(state: MessagesState):
@@ -576,7 +754,7 @@ def create_unified_agent(rag, mcp_client):
         if getattr(last_message, "type", None) == "human":
             question = str(last_message.content)
 
-            # Explicit web search takes priority over document search.
+            # Explicit web search takes priority.
             if is_explicit_web_search(question):
                 try:
                     response = await answer_explicit_web_search(
@@ -598,6 +776,31 @@ def create_unified_agent(rag, mcp_client):
                                     "Please check the search_web tool "
                                     "definition, tool_choice support, "
                                     "and server logs."
+                                )
+                            )
+                        ]
+                    }
+
+            # Company database questions go through SQL.
+            if is_sql_question(question):
+                try:
+                    response = await answer_sql_question(question)
+                    return {"messages": [response]}
+
+                except Exception as error:
+                    print(
+                        f"\n[SQL ROUTER ERROR] "
+                        f"{type(error).__name__}: {error}"
+                    )
+
+                    return {
+                        "messages": [
+                            AIMessage(
+                                content=(
+                                    "I couldn't execute the company "
+                                    "database query. Please check the "
+                                    "query_sql_database tool, database "
+                                    "connection, and server logs."
                                 )
                             )
                         ]
@@ -635,7 +838,7 @@ def create_unified_agent(rag, mcp_client):
                             ]
                         }
 
-            # Original/full-text requests first check document evidence.
+            # Full/original text requests first check document evidence.
             if is_original_text_request(question):
                 print(
                     "\n[TEXT ROUTER] Full/original text request detected."
@@ -690,7 +893,7 @@ def create_unified_agent(rag, mcp_client):
                         ]
                     }
 
-        # Normal document/web/general agent flow.
+        # Normal document, SQL, web, and general agent flow.
         if not isinstance(messages[0], SystemMessage):
             messages.insert(
                 0,
@@ -713,7 +916,7 @@ def create_unified_agent(rag, mcp_client):
         return {"messages": [response]}
 
     # --------------------------------------------------
-    # 7. LangGraph workflow
+    # 9. LangGraph workflow
     # --------------------------------------------------
 
     builder = StateGraph(MessagesState)
