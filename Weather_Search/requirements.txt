@@ -1,0 +1,6 @@
+httpx
+mcp[cli]
+langgraph
+langchain-core
+langchain-ollama
+python-dotenv

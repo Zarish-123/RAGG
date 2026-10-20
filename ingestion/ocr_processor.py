@@ -2,266 +2,93 @@
 import re
 
 import pytesseract
-
-from PIL import (
-    Image,
-    ImageEnhance,
-    ImageFilter,
-    ImageOps
-)
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from core.interfaces.ocr import OCRProcessor
 
 
-class TesseractOCRProcessor(
-    OCRProcessor
-):
+class TesseractOCRProcessor(OCRProcessor):
 
-    def __init__(
-        self,
-        language: str = "eng"
-    ):
-
+    def __init__(self, language: str = "eng"):
         self.language = language
-
         pytesseract.pytesseract.tesseract_cmd = (
-            r"C:\Program Files\Tesseract-OCR"
-            r"\tesseract.exe"
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe"
         )
 
-    # ---------------------------------
-    # Image preprocessing
-    # ---------------------------------
-
-    def preprocess_image(
-        self,
-        image: Image.Image
-    ) -> Image.Image:
-
-        # Convert to grayscale
+    def preprocess_image(self, image: Image.Image) -> Image.Image:
         image = image.convert("L")
 
-        # Upscale
         width, height = image.size
+        image = image.resize((width * 2, height * 2))
 
-        image = image.resize(
-            (
-                width * 3,
-                height * 3
-            )
-        )
+        image = ImageEnhance.Contrast(image).enhance(2.0)
+        image = image.filter(ImageFilter.SHARPEN)
+        return ImageOps.autocontrast(image)
 
-        # Increase contrast
-        enhancer = ImageEnhance.Contrast(
-            image
-        )
-
-        image = enhancer.enhance(
-            2.5
-        )
-
-        # Sharpen
-        image = image.filter(
-            ImageFilter.SHARPEN
-        )
-
-        # Autocontrast
-        image = ImageOps.autocontrast(
-            image
-        )
-
-        return image
-
-    # ---------------------------------
-    # Clean OCR output
-    # ---------------------------------
-
-    def clean_text(
-        self,
-        text: str
-    ) -> str:
-
+    def clean_text(self, text: str) -> str:
         if not text:
             return ""
 
-        # Normalize line endings
-        text = text.replace(
-            "\r\n",
-            "\n"
-        )
-
-        # Common OCR corrections
-        corrections = {
-
-            "Data Caflection":
-                "Data Collection",
-
-            "Data Caflection,":
-                "Data Collection",
-
-            "Chuniang":
-                "Chunking",
-
-            "Chuniang,":
-                "Chunking",
-
-            "Refievall":
-                "Retrieval",
-
-            "Refievall,":
-                "Retrieval",
-
-            "Embedcling":
-                "Embedding",
-
-            "Embedcling,":
-                "Embedding",
-
-            "Generatlon":
-                "Generation",
-
-            "Generatlon,":
-                "Generation",
-
-            "Resp0nse":
-                "Response",
-
-            "Resp0nse,":
-                "Response"
-        }
-
-        for wrong, correct in corrections.items():
-
-            text = text.replace(
-                wrong,
-                correct
-            )
-
-        # ---------------------------------
-        # Remove obvious diagram noise
-        # ---------------------------------
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
 
         cleaned_lines = []
 
-        for line in text.split("\n"):
-
+        for line in text.splitlines():
             line = line.strip()
 
             if not line:
                 continue
 
-            # Remove lines consisting mainly
-            # of OCR-detected borders/arrows.
-            alphanumeric_count = sum(
-                character.isalnum()
-                for character in line
-            )
-
-            if alphanumeric_count < 3:
+            # Sirf almost-empty noise lines remove karo.
+            if sum(ch.isalnum() for ch in line) < 2:
                 continue
 
-            # Remove repeated symbols
-            line = re.sub(
-                r"[-_=|~]+",
-                " ",
-                line
-            )
+            line = re.sub(r"[ \t]+", " ", line)
+            cleaned_lines.append(line)
 
-            # Normalize spaces
-            line = re.sub(
-                r"\s+",
-                " ",
-                line
-            ).strip()
+        return "\n".join(cleaned_lines)
 
-            if line:
-                cleaned_lines.append(
-                    line
-                )
+    @staticmethod
+    def _quality_score(text: str) -> int:
+        if not text:
+            return -1
 
-        return "\n".join(
-            cleaned_lines
-        )
+        words = re.findall(r"\b[\w'-]+\b", text)
+        readable_chars = sum(ch.isalnum() for ch in text)
+        noise = text.count("�")
 
-    # ---------------------------------
-    # OCR
-    # ---------------------------------
+        return readable_chars + len(words) * 3 - noise * 10
 
-    def extract_text(
-        self,
-        image: Image.Image
-    ) -> str:
+    def extract_text(self, image: Image.Image) -> str:
+        processed = self.preprocess_image(image)
 
-        processed_image = (
-            self.preprocess_image(
-                image
-            )
-        )
+        configs = [
+            "--oem 3 --psm 3",
+            "--oem 3 --psm 6",
+            "--oem 3 --psm 11",
+        ]
 
         results = []
 
-        configs = [
-            "--psm 6",
-            "--psm 11",
-            "--psm 12"
-        ]
-
         for config in configs:
-
-            text = pytesseract.image_to_string(
-                processed_image,
-                lang=self.language,
-                config=config
-            )
-
-            cleaned = self.clean_text(
-                text
-            )
-
-            if cleaned:
-                results.append(
-                    cleaned
+            try:
+                raw_text = pytesseract.image_to_string(
+                    processed,
+                    lang=self.language,
+                    config=config,
                 )
+
+                cleaned = self.clean_text(raw_text)
+
+                if cleaned:
+                    results.append(cleaned)
+
+            except pytesseract.TesseractError as exc:
+                print(f"[OCR] Tesseract error: {exc}")
 
         if not results:
             return ""
 
-        # ---------------------------------
-        # Choose the result containing
-        # the most useful OCR keywords.
-        # ---------------------------------
-
-        keywords = [
-            "document",
-            "data",
-            "collection",
-            "preprocessing",
-            "chunking",
-            "embedding",
-            "retrieval",
-            "generation",
-            "response",
-            "query",
-            "model"
-        ]
-
-        best_result = results[0]
-        best_score = 0
-
-        for result in results:
-
-            result_lower = (
-                result.lower()
-            )
-
-            score = sum(
-                keyword in result_lower
-                for keyword in keywords
-            )
-
-            if score > best_score:
-
-                best_score = score
-                best_result = result
-
-        return best_result
+        # Historical, scientific, aur general text sab ke liye
+        # same topic-independent quality scoring.
+        return max(results, key=self._quality_score)

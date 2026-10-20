@@ -1,206 +1,122 @@
+
+import re
+
 from pypdf import PdfReader
 
 from core.interfaces.document_loader import DocumentLoader
 from core.interfaces.models.document import Document
 from core.interfaces.ocr import OCRProcessor
-
 from ingestion.image_extractor import PDFImageExtractor
 
 
-class PDFLoader(
-    DocumentLoader
-):
+class PDFLoader(DocumentLoader):
 
     def __init__(
         self,
         ocr_processor: OCRProcessor | None = None,
-        image_extractor: PDFImageExtractor | None = None
+        image_extractor: PDFImageExtractor | None = None,
     ):
+        self.ocr_processor = ocr_processor
+        self.image_extractor = image_extractor
 
-        self.ocr_processor = (
-            ocr_processor
-        )
+    @staticmethod
+    def _merge_ocr_text(texts: list[str]) -> str:
+        seen = set()
+        lines = []
 
-        self.image_extractor = (
-            image_extractor
-        )
+        for text in texts:
+            for line in text.splitlines():
+                line = line.strip()
+                normalized = re.sub(
+                    r"\s+",
+                    " ",
+                    line,
+                ).casefold()
 
-    def load(
-        self,
-        file_path
-    ):
+                if not normalized or normalized in seen:
+                    continue
 
-        reader = PdfReader(
-            file_path
-        )
+                seen.add(normalized)
+                lines.append(line)
 
+        return "\n".join(lines)
+
+    def load(self, file_path: str):
+        reader = PdfReader(file_path)
         documents = []
 
-        for page_number, page in enumerate(
-            reader.pages
-        ):
+        for page_index, page in enumerate(reader.pages):
+            page_number = page_index + 1
+            native_text = (page.extract_text() or "").strip()
+            ocr_parts = []
 
-            # ---------------------------------
-            # 1. Normal PDF text
-            # ---------------------------------
-
-            text = (
-                page.extract_text()
-                or ""
-            )
-
-            ocr_texts = []
-
-            # ---------------------------------
-            # 2. Extract embedded images
-            # ---------------------------------
-
-            if (
-                self.ocr_processor
-                and self.image_extractor
-            ):
-
-                images = (
-                    self.image_extractor
-                    .extract_embedded_images(
+            if self.ocr_processor and self.image_extractor:
+                try:
+                    images = self.image_extractor.extract_embedded_images(
                         file_path,
-                        page_number
+                        page_index,
                     )
-                )
 
-                print(
-                    f"Page {page_number + 1}: "
-                    f"{len(images)} actual image(s) found"
-                )
+                    for image in images:
+                        text = self.ocr_processor.extract_text(image)
 
-                # ---------------------------------
-                # 3. OCR images
-                # ---------------------------------
+                        if text.strip():
+                            ocr_parts.append(text.strip())
 
-                for image_number, image in enumerate(
-                    images,
-                    start=1
-                ):
+                    # Sparse/empty native text may indicate a scanned page.
+                    # OCR the rendered page if native extraction is incomplete.
+                    if len(native_text) < 250:
+                        page_image = self.image_extractor.render_page(
+                            file_path,
+                            page_index,
+                        )
 
+                        page_text = self.ocr_processor.extract_text(
+                            page_image
+                        )
+
+                        if page_text.strip():
+                            ocr_parts.append(page_text.strip())
+
+                except Exception as exc:
                     print(
-                        f"   OCR processing "
-                        f"image {image_number}: "
-                        f"{image.size}"
+                        f"[PDF LOADER] OCR failed on page "
+                        f"{page_number}: {exc}"
                     )
 
-                    ocr_text = (
-                        self.ocr_processor
-                        .extract_text(
-                            image
-                        )
-                    )
+            metadata = {
+                "page": page_number,
+                "source": file_path,
+            }
 
-                    if ocr_text:
-
-                        print(
-                            "\n========== OCR TEXT =========="
-                        )
-
-                        print(
-                            ocr_text
-                        )
-
-                        print(
-                            "==============================\n"
-                        )
-
-                        ocr_texts.append(
-                            ocr_text
-                        )
-
-                    else:
-
-                        print(
-                            "   OCR returned "
-                            "no text."
-                        )
-
-            # ---------------------------------
-            # 4. Combine text + OCR
-            # ---------------------------------
-
-            if ocr_texts:
-
-                combined_ocr = (
-                    "\n\n".join(
-                        ocr_texts
-                    )
-                )
-
-                text = (
-                    f"{text}\n\n"
-                    f"{combined_ocr}"
-                ).strip()
-
-            # ---------------------------------
-            # 5. Fallback for scanned page
-            # ---------------------------------
-
-            elif (
-                not text.strip()
-                and self.ocr_processor
-                and self.image_extractor
-            ):
-
-                print(
-                    f"Page {page_number + 1}: "
-                    "No text or embedded image found."
-                )
-
-                print(
-                    "Using full-page OCR..."
-                )
-
-                page_image = (
-                    self.image_extractor
-                    .render_page(
-                        file_path,
-                        page_number
-                    )
-                )
-
-                page_ocr = (
-                    self.ocr_processor
-                    .extract_text(
-                        page_image
-                    )
-                )
-
-                if page_ocr:
-
-                    print(
-                        "\n========== PAGE OCR =========="
-                    )
-
-                    print(
-                        page_ocr
-                    )
-
-                    print(
-                        "==============================\n"
-                    )
-
-                    text = page_ocr
-
-            # ---------------------------------
-            # 6. Create Document
-            # ---------------------------------
-
-            if text.strip():
-
+            if native_text:
                 documents.append(
                     Document(
-                        content=text,
+                        content=native_text,
                         metadata={
-                            "page": page_number + 1,
-                            "source": file_path
-                        }
+                            **metadata,
+                            "content_type": "native",
+                        },
                     )
+                )
+
+            ocr_text = self._merge_ocr_text(ocr_parts)
+
+            if ocr_text:
+                documents.append(
+                    Document(
+                        content=ocr_text,
+                        metadata={
+                            **metadata,
+                            "content_type": "ocr",
+                        },
+                    )
+                )
+
+            if not native_text and not ocr_text:
+                print(
+                    f"[PDF LOADER] No text extracted "
+                    f"from page {page_number}."
                 )
 
         return documents

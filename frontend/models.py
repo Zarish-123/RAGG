@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
@@ -10,7 +11,15 @@ class ChatMessage:
 
 @dataclass
 class ApiResult:
-    answer: str
-    sources: List[Dict[str, Any]]
+    answer: str = ""
+    sources: List[Dict[str, Any]] = field(default_factory=list)
+
+    rag_answer: str = ""
+    ocr_answer: str = ""
+    weather_answer: str = ""
+    web_search_answer: str = ""
+
+    ocr_sources: List[Dict[str, Any]] = field(default_factory=list)
+
     success: bool = True
     error: Optional[str] = None
