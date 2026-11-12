@@ -1,4 +1,6 @@
 
+import logging
+
 from ingestion.pdf_loader import PDFLoader
 from ingestion.chunker import Chunker
 from ingestion.ocr_processor import TesseractOCRProcessor
@@ -11,7 +13,16 @@ from generation.ollama_llm import OllamaLLM
 from pipeline.rag_pipeline import RAGPipeline
 
 
+logger = logging.getLogger(__name__)
+
+
 def create_rag():
+
+    logger.info("Starting RAG pipeline initialization.")
+
+    # Initialize OCR and image extractor
+    logger.info("Initializing OCR processor and image extractor.")
+
     ocr_processor = TesseractOCRProcessor()
     image_extractor = PDFImageExtractor(dpi=300)
 
@@ -20,6 +31,7 @@ def create_rag():
         image_extractor=image_extractor,
     )
 
+    # PDF files
     pdf_paths = [
         "data/machine learning.pdf",
         "data/document.pdf",
@@ -27,21 +39,37 @@ def create_rag():
 
     documents = []
 
+    # Load PDF documents
     for pdf_path in pdf_paths:
-        print(f"\n[STARTUP] Loading PDF: {pdf_path}")
+
+        logger.info("Loading PDF: %s", pdf_path)
 
         loaded_documents = loader.load(pdf_path)
         documents.extend(loaded_documents)
 
-        print(
-            f"[STARTUP] Extracted {len(loaded_documents)} "
-            f"native/OCR page documents."
+        logger.info(
+            "Extracted %d native/OCR page documents from %s.",
+            len(loaded_documents),
+            pdf_path,
         )
 
     if not documents:
+
+        logger.error(
+            "No PDF text was extracted. Check PDF paths and OCR setup."
+        )
+
         raise ValueError(
             "No PDF text was extracted. Check PDF paths and OCR setup."
         )
+
+    logger.info(
+        "Total documents extracted: %d",
+        len(documents),
+    )
+
+    # Initialize chunker
+    logger.info("Starting document chunking.")
 
     chunker = Chunker(
         chunk_size=500,
@@ -51,10 +79,14 @@ def create_rag():
     chunks = chunker.split(documents)
 
     if not chunks:
+
+        logger.error("No chunks were generated.")
+
         raise ValueError("No chunks were generated.")
 
-    print(f"[STARTUP] Total chunks: {len(chunks)}")
+    logger.info("Total chunks generated: %d", len(chunks))
 
+    # Count OCR chunks
     ocr_count = sum(
         1
         for chunk in chunks
@@ -63,16 +95,30 @@ def create_rag():
         ).get("content_type") == "ocr"
     )
 
-    print(f"[STARTUP] OCR chunks: {ocr_count}")
+    logger.info("Total OCR chunks: %d", ocr_count)
+
+    # Initialize embedding model
+    logger.info("Initializing embedding model: nomic-embed-text.")
 
     embedder = OllamaEmbedder(
         model="nomic-embed-text"
+    )
+
+    # Generate embeddings
+    logger.info(
+        "Generating embeddings for %d chunks.",
+        len(chunks),
     )
 
     embeddings = [
         embedder.embed(chunk.content)
         for chunk in chunks
     ]
+
+    logger.info("Embeddings generated successfully.")
+
+    # Initialize FAISS vector store
+    logger.info("Initializing FAISS vector store.")
 
     vector_store = FAISSStore(
         dimension=len(embeddings[0])
@@ -83,21 +129,30 @@ def create_rag():
         embeddings,
     )
 
+    logger.info("Documents added to FAISS vector store successfully.")
+
+    # Initialize retriever
+    logger.info("Initializing similarity retriever.")
+
     retriever = SimilarityRetriever(
         vector_store=vector_store,
         embedder=embedder,
     )
 
+    # Initialize LLM
+    logger.info("Initializing LLM: llama3.2:3b.")
+
     llm = OllamaLLM(
         model="llama3.2:3b"
     )
 
+    # Create RAG pipeline
     rag = RAGPipeline(
         retriever=retriever,
         llm=llm,
     )
 
-    # Indices refer to the same ordered chunks stored in FAISS.
+    # Preserve OCR chunk indices
     rag.ocr_chunk_indices = [
         index
         for index, chunk in enumerate(chunks)
@@ -105,5 +160,12 @@ def create_rag():
             getattr(chunk, "metadata", {}) or {}
         ).get("content_type") == "ocr"
     ]
+
+    logger.info(
+        "RAG pipeline initialized successfully. "
+        "Total chunks: %d | OCR chunks: %d",
+        len(chunks),
+        ocr_count,
+    )
 
     return rag

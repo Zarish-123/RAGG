@@ -2,9 +2,13 @@
 import io
 import os
 import re
+import logging
 
 import pymupdf
 from PIL import Image
+
+
+logger = logging.getLogger(__name__)
 
 
 class PDFImageExtractor:
@@ -17,6 +21,12 @@ class PDFImageExtractor:
         file_path: str,
         page_number: int,
     ) -> list[Image.Image]:
+
+        logger.info(
+            "Opening PDF for image extraction: %s | Page: %d",
+            file_path,
+            page_number + 1,
+        )
 
         pdf = pymupdf.open(file_path)
         images = []
@@ -41,6 +51,7 @@ class PDFImageExtractor:
 
                 try:
                     image_data = pdf.extract_image(xref)
+
                     image = Image.open(
                         io.BytesIO(image_data["image"])
                     ).convert("RGB")
@@ -49,6 +60,7 @@ class PDFImageExtractor:
                         "data",
                         "extracted_images",
                     )
+
                     os.makedirs(output_dir, exist_ok=True)
 
                     image_path = os.path.join(
@@ -59,13 +71,28 @@ class PDFImageExtractor:
                     image.save(image_path)
                     images.append(image)
 
-                    print(
-                        f"[IMAGE] Page {page_number + 1}: "
-                        f"extracted image {image.size}"
+                    logger.info(
+                        "Image extracted successfully | "
+                        "Page: %d | Size: %s | Saved: %s",
+                        page_number + 1,
+                        image.size,
+                        image_path,
                     )
 
-                except Exception as exc:
-                    print(f"[IMAGE] Could not extract xref {xref}: {exc}")
+                except Exception:
+                    logger.exception(
+                        "Could not extract image | Page: %d | Xref: %d",
+                        page_number + 1,
+                        xref,
+                    )
+
+            logger.info(
+                "Image extraction completed | PDF: %s | "
+                "Page: %d | Total images: %d",
+                file_path,
+                page_number + 1,
+                len(images),
+            )
 
             return images
 
@@ -78,6 +105,13 @@ class PDFImageExtractor:
         page_number: int,
     ) -> Image.Image:
 
+        logger.info(
+            "Rendering PDF page | File: %s | Page: %d | DPI: %d",
+            file_path,
+            page_number + 1,
+            self.dpi,
+        )
+
         pdf = pymupdf.open(file_path)
 
         try:
@@ -89,9 +123,17 @@ class PDFImageExtractor:
                 alpha=False,
             )
 
-            return Image.open(
+            image = Image.open(
                 io.BytesIO(pixmap.tobytes("png"))
             ).convert("RGB")
+
+            logger.info(
+                "PDF page rendered successfully | Page: %d | Size: %s",
+                page_number + 1,
+                image.size,
+            )
+
+            return image
 
         finally:
             pdf.close()

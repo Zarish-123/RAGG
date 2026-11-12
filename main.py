@@ -1,5 +1,11 @@
 
+import logging
 from contextlib import asynccontextmanager
+
+from logs.config.logging_config import setup_logging
+
+# Initialize logging before importing application modules
+setup_logging()
 
 from fastapi import FastAPI
 
@@ -9,36 +15,78 @@ from unified_agent import create_unified_agent
 from Weather_Search.mcp_client.client import MCPClient
 
 
+logger = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    mcp_client = MCPClient(
-        server_module="Weather_Search.weather_server.server"
-    )
+
+    mcp_client = None
 
     try:
-        print("\n[STARTUP] Initializing RAG + OCR...")
+        logger.info("Application startup initiated.")
+
+        # Initialize RAG and OCR
+        logger.info("Initializing RAG and OCR...")
+
         app.state.rag = create_rag()
 
-        print("\n[STARTUP] Connecting to Weather MCP...")
+        logger.info("RAG and OCR initialized successfully.")
+
+        # Connect Weather MCP
+        logger.info("Connecting to Weather MCP...")
+
+        mcp_client = MCPClient(
+            server_module="Weather_Search.weather_server.server"
+        )
+
         await mcp_client.connect()
+
         app.state.mcp_client = mcp_client
 
-        print("\n[STARTUP] Initializing Unified Agent...")
+        logger.info("Weather MCP connected successfully.")
+
+        # Initialize Unified Agent
+        logger.info("Initializing Unified Agent...")
+
         app.state.unified_agent = create_unified_agent(
             rag=app.state.rag,
             mcp_client=app.state.mcp_client,
         )
 
-        print(
-            "\n[STARTUP] Ready: RAG + OCR + "
-            "SQL Database + Weather MCP + Web Search"
+        logger.info("Unified Agent initialized successfully.")
+
+        logger.info(
+            "Application ready: RAG, OCR, SQL, Weather MCP and Web Search."
         )
 
         yield
 
+    except Exception:
+        logger.exception(
+            "Application startup or runtime failed."
+        )
+        raise
+
     finally:
-        print("\n[SHUTDOWN] Closing Weather MCP...")
-        await mcp_client.close()
+
+        if mcp_client is not None:
+
+            logger.info("Closing Weather MCP...")
+
+            try:
+                await mcp_client.close()
+
+                logger.info(
+                    "Weather MCP closed successfully."
+                )
+
+            except Exception:
+                logger.exception(
+                    "Failed to close Weather MCP."
+                )
+
+        logger.info("Application shutdown completed.")
 
 
 app = FastAPI(

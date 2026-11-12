@@ -1,5 +1,5 @@
-
 import json
+import logging
 import re
 
 from langchain_ollama import ChatOllama
@@ -14,6 +14,18 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from Web_Search.langraph_agent.search_tools import search_web
 from database.sql_tool import sql_database_tool
+
+
+logger = logging.getLogger(__name__)
+
+
+def log_message(*args, **kwargs):
+    """Write existing print-style diagnostic messages through logging."""
+    separator = kwargs.get("sep", " ")
+    message = separator.join(str(arg) for arg in args)
+    logger.info(message)
+
+
 
 
 SYSTEM_PROMPT = """
@@ -396,6 +408,8 @@ def is_sql_question(question: str) -> bool:
 
 def create_unified_agent(rag, mcp_client):
 
+    logger.info("Initializing Unified LangGraph agent.")
+
     # --------------------------------------------------
     # 1. Document search tool
     # --------------------------------------------------
@@ -405,8 +419,8 @@ def create_unified_agent(rag, mcp_client):
         k: int = 10,
     ) -> str:
 
-        print("\n[TOOL EXECUTING] search_documents")
-        print(f"[DOCUMENT QUERY] {question}")
+        log_message("\n[TOOL EXECUTING] search_documents")
+        log_message(f"[DOCUMENT QUERY] {question}")
 
         result = rag.ask(question, k=k)
 
@@ -427,11 +441,11 @@ def create_unified_agent(rag, mcp_client):
                 "metadata": metadata,
             })
 
-            print(f"\n[RETRIEVED DOCUMENT {index}]")
-            print(f"Metadata: {metadata}")
-            print(f"Content: {content[:1000]}")
+            log_message(f"\n[RETRIEVED DOCUMENT {index}]")
+            log_message(f"Metadata: {metadata}")
+            log_message(f"Content: {content[:1000]}")
 
-        print(
+        log_message(
             f"\n[RETRIEVED DOCUMENT COUNT] {len(documents)}"
         )
 
@@ -460,7 +474,7 @@ def create_unified_agent(rag, mcp_client):
     # --------------------------------------------------
 
     async def search_location(city: str) -> str:
-        print(
+        log_message(
             f"\n[TOOL EXECUTING] search_location | city={city}"
         )
 
@@ -470,12 +484,12 @@ def create_unified_agent(rag, mcp_client):
         )
 
         output = format_mcp_result(result)
-        print(f"\n[LOCATION RESULT] {output}")
+        log_message(f"\n[LOCATION RESULT] {output}")
 
         return output
 
     async def get_current_weather(city: str) -> str:
-        print(
+        log_message(
             f"\n[TOOL EXECUTING] get_current_weather | city={city}"
         )
 
@@ -485,7 +499,7 @@ def create_unified_agent(rag, mcp_client):
         )
 
         output = format_mcp_result(result)
-        print(f"\n[WEATHER RESULT] {output}")
+        log_message(f"\n[WEATHER RESULT] {output}")
 
         return output
 
@@ -496,7 +510,7 @@ def create_unified_agent(rag, mcp_client):
 
         days = max(1, min(days, 7))
 
-        print(
+        log_message(
             f"\n[TOOL EXECUTING] get_weather_forecast "
             f"| city={city}, days={days}"
         )
@@ -507,7 +521,7 @@ def create_unified_agent(rag, mcp_client):
         )
 
         output = format_mcp_result(result)
-        print(f"\n[FORECAST RESULT] {output}")
+        log_message(f"\n[FORECAST RESULT] {output}")
 
         return output
 
@@ -551,7 +565,7 @@ def create_unified_agent(rag, mcp_client):
         sql_database_tool,
     ]
 
-    print(
+    log_message(
         "\n[AGENT INITIALIZED] Available tools:",
         [tool.name for tool in tools],
     )
@@ -575,10 +589,10 @@ def create_unified_agent(rag, mcp_client):
             [sql_database_tool],
             tool_choice="query_sql_database",
         )
-        print("[SQL ROUTER] Forced SQL tool binding enabled.")
+        log_message("[SQL ROUTER] Forced SQL tool binding enabled.")
 
     except Exception as error:
-        print(
+        log_message(
             "[SQL TOOL BINDING WARNING] "
             f"{type(error).__name__}: {error}"
         )
@@ -591,7 +605,7 @@ def create_unified_agent(rag, mcp_client):
             tool_choice="search_web",
         )
     except Exception as error:
-        print(
+        log_message(
             "[WEB TOOL BINDING WARNING] "
             f"{type(error).__name__}: {error}"
         )
@@ -644,8 +658,8 @@ def create_unified_agent(rag, mcp_client):
     ):
         """Request search_web before answering."""
 
-        print("\n[WEB ROUTER] Explicit web search detected.")
-        print(f"[WEB ROUTER] Query: {question}")
+        log_message("\n[WEB ROUTER] Explicit web search detected.")
+        log_message(f"[WEB ROUTER] Query: {question}")
 
         web_messages = [
             SystemMessage(
@@ -666,9 +680,9 @@ def create_unified_agent(rag, mcp_client):
 
         response = await web_search_llm.ainvoke(web_messages)
 
-        print("\n[WEB ROUTER] Initial model response:")
-        print("Content:", response.content)
-        print("Tool calls:", response.tool_calls)
+        log_message("\n[WEB ROUTER] Initial model response:")
+        log_message("Content:", response.content)
+        log_message("Tool calls:", response.tool_calls)
 
         tool_calls = getattr(response, "tool_calls", []) or []
 
@@ -694,8 +708,8 @@ def create_unified_agent(rag, mcp_client):
     async def answer_sql_question(question: str):
         """Force company database questions through the SQL tool."""
 
-        print("\n[SQL ROUTER] Company database question detected.")
-        print(f"[SQL ROUTER] Question: {question}")
+        log_message("\n[SQL ROUTER] Company database question detected.")
+        log_message(f"[SQL ROUTER] Question: {question}")
 
         sql_messages = [
             SystemMessage(
@@ -719,9 +733,9 @@ def create_unified_agent(rag, mcp_client):
 
         tool_calls = getattr(response, "tool_calls", []) or []
 
-        print("\n[SQL ROUTER] Model response:")
-        print("Content:", response.content)
-        print("Tool calls:", tool_calls)
+        log_message("\n[SQL ROUTER] Model response:")
+        log_message("Content:", response.content)
+        log_message("Tool calls:", tool_calls)
 
         has_sql_call = any(
             call.get("name") == "query_sql_database"
@@ -763,7 +777,7 @@ def create_unified_agent(rag, mcp_client):
                     return {"messages": [response]}
 
                 except Exception as error:
-                    print(
+                    log_message(
                         f"\n[WEB SEARCH ERROR] "
                         f"{type(error).__name__}: {error}"
                     )
@@ -788,7 +802,7 @@ def create_unified_agent(rag, mcp_client):
                     return {"messages": [response]}
 
                 except Exception as error:
-                    print(
+                    log_message(
                         f"\n[SQL ROUTER ERROR] "
                         f"{type(error).__name__}: {error}"
                     )
@@ -811,8 +825,8 @@ def create_unified_agent(rag, mcp_client):
                 city = extract_city(question)
 
                 if city:
-                    print("\n[WEATHER ROUTER] Weather detected.")
-                    print(f"[WEATHER ROUTER] City: {city}")
+                    log_message("\n[WEATHER ROUTER] Weather detected.")
+                    log_message(f"[WEATHER ROUTER] City: {city}")
 
                     try:
                         response = await answer_weather(
@@ -822,7 +836,7 @@ def create_unified_agent(rag, mcp_client):
                         return {"messages": [response]}
 
                     except Exception as error:
-                        print(
+                        log_message(
                             f"\n[WEATHER ERROR] "
                             f"{type(error).__name__}: {error}"
                         )
@@ -840,7 +854,7 @@ def create_unified_agent(rag, mcp_client):
 
             # Full/original text requests first check document evidence.
             if is_original_text_request(question):
-                print(
+                log_message(
                     "\n[TEXT ROUTER] Full/original text request detected."
                 )
 
@@ -877,7 +891,7 @@ def create_unified_agent(rag, mcp_client):
                     return {"messages": [response]}
 
                 except Exception as error:
-                    print(
+                    log_message(
                         f"\n[TEXT ROUTER ERROR] "
                         f"{type(error).__name__}: {error}"
                     )
@@ -902,12 +916,12 @@ def create_unified_agent(rag, mcp_client):
 
         response = await llm_with_tools.ainvoke(messages)
 
-        print("\n[DEBUG] Model response:")
-        print("Content:", response.content)
-        print("Tool calls:", response.tool_calls)
+        log_message("\n[DEBUG] Model response:")
+        log_message("Content:", response.content)
+        log_message("Tool calls:", response.tool_calls)
 
         for tool_call in getattr(response, "tool_calls", []) or []:
-            print(
+            log_message(
                 "\n[TOOL REQUEST]",
                 tool_call["name"],
                 tool_call["args"],
@@ -935,6 +949,6 @@ def create_unified_agent(rag, mcp_client):
 
     graph = builder.compile()
 
-    print("[AGENT READY] Unified LangGraph agent is ready.")
+    log_message("[AGENT READY] Unified LangGraph agent is ready.")
 
     return graph
