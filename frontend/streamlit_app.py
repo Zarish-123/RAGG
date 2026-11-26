@@ -1,3 +1,4 @@
+
 import streamlit as st
 
 from api_client import FastApiClient
@@ -18,9 +19,7 @@ class RagStreamlitApp:
 
         self.config = AppConfig()
 
-        self.session_manager = (
-            SessionStateManager()
-        )
+        self.session_manager = SessionStateManager()
 
         self.api_client = FastApiClient(
             self.config.api_url
@@ -49,6 +48,93 @@ class RagStreamlitApp:
 
         StyleManager.apply()
 
+    def render_logs(self) -> None:
+
+        with st.expander(
+            "Application Logs",
+            expanded=False
+        ):
+
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+
+                level = st.selectbox(
+                    "Log Level",
+                    [
+                        "ALL",
+                        "INFO",
+                        "WARNING",
+                        "ERROR",
+                        "DEBUG",
+                        "CRITICAL"
+                    ],
+                    key="log_level"
+                )
+
+            with col2:
+
+                limit = st.selectbox(
+                    "Number of Entries",
+                    [
+                        50,
+                        100,
+                        200,
+                        500,
+                        1000
+                    ],
+                    index=2,
+                    key="log_limit"
+                )
+
+            st.button(
+                "Refresh Logs",
+                key="refresh_logs"
+            )
+
+            # Fetch logs on every Streamlit rerun.
+            result = self.api_client.get_logs(
+                level=level,
+                limit=limit
+            )
+
+            st.session_state["application_logs"] = result
+
+            if not isinstance(result, dict):
+
+                st.error(
+                    "Invalid response received from the logs API."
+                )
+
+                return
+
+            if result.get("error"):
+
+                st.error(
+                    result["error"]
+                )
+
+                return
+
+            logs = result.get("logs", [])
+
+            st.caption(
+                f"Showing {result.get('count', 0)} log entries"
+            )
+
+            if logs:
+
+                st.code(
+                    "\n".join(logs),
+                    language="log"
+                )
+
+            else:
+
+                st.info(
+                    "No logs found for this filter."
+                )
+
     def run(self) -> None:
 
         self.setup()
@@ -62,17 +148,18 @@ class RagStreamlitApp:
         # Header
         HeaderView.render()
 
+        # Application Logs
+        self.render_logs()
+
         # Welcome section
         suggestion = WelcomeView.render()
 
         # Previous messages
         self.chat_view.render_history()
 
-        # Always render the chat input
+        # Chat input
         question = self.chat_view.render_input()
 
-        # If user clicked a suggested question,
-        # use that question instead.
         if suggestion:
             question = suggestion
 
@@ -93,4 +180,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()

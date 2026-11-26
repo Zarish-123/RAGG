@@ -1,21 +1,19 @@
 
-import re
+import logging
+import time
+
+
+logger = logging.getLogger(__name__)
 
 
 class RAGPipeline:
 
-    def __init__(
-        self,
-        retriever,
-        llm
-    ):
+    def __init__(self, retriever, llm):
+
         self.retriever = retriever
         self.llm = llm
 
-    def _is_visual_list_question(
-        self,
-        question: str
-    ) -> bool:
+    def _is_visual_list_question(self, question: str) -> bool:
 
         question_lower = question.lower()
 
@@ -30,7 +28,7 @@ class RAGPipeline:
             "steps",
             "step",
             "process",
-            "workflow"
+            "workflow",
         ]
 
         return any(
@@ -38,10 +36,7 @@ class RAGPipeline:
             for term in visual_terms
         )
 
-    def _extract_ocr_stages(
-        self,
-        documents
-    ) -> list[str]:
+    def _extract_ocr_stages(self, documents) -> list[str]:
 
         known_stages = [
             "preprocessing",
@@ -50,7 +45,7 @@ class RAGPipeline:
             "embedding",
             "retrieval",
             "generation",
-            "response"
+            "response",
         ]
 
         found_stages = []
@@ -61,40 +56,25 @@ class RAGPipeline:
                 continue
 
             content = document.content or ""
-
             content_lower = content.lower()
 
             for stage in known_stages:
 
-                if stage in content_lower:
-
-                    if stage not in found_stages:
-
-                        found_stages.append(
-                            stage
-                        )
+                if (
+                    stage in content_lower
+                    and stage not in found_stages
+                ):
+                    found_stages.append(stage)
 
         return found_stages
 
-    def ask(
-        self,
-        question,
-        k=5
-    ):
-
-        documents = self.retriever.retrieve(
-            question,
-            k
-        )
-
-        if documents is None:
-            documents = []
+    def _build_context(self, documents) -> str:
 
         context_parts = []
 
-        for i, document in enumerate(
+        for index, document in enumerate(
             documents,
-            start=1
+            start=1,
         ):
 
             if document is None:
@@ -104,124 +84,99 @@ class RAGPipeline:
 
             page = metadata.get(
                 "page",
-                "Unknown"
+                "Unknown",
             )
 
             chunk_id = metadata.get(
                 "chunk_id",
-                "Unknown"
+                "Unknown",
             )
 
             content = document.content or ""
 
+            if not content.strip():
+                continue
+
             context_parts.append(
                 f"""
---- Document {i} ---
-
+--- Document {index} ---
 Page: {page}
 Chunk: {chunk_id}
-
 Content:
 {content}
 """
             )
 
-        context = "\n".join(
-            context_parts
-        )
+        context = "\n".join(context_parts)
 
         if not context.strip():
 
-            context = (
+            return (
                 "No relevant information was retrieved "
                 "from the document."
             )
 
-        visual_list_question = (
-            self._is_visual_list_question(
-                question
+        return context
+
+    def _build_extracted_information(
+        self,
+        documents,
+        visual_list_question: bool,
+    ) -> str:
+
+        if not visual_list_question:
+            return ""
+
+        ocr_stages = self._extract_ocr_stages(documents)
+
+        if not ocr_stages:
+            return ""
+
+        stage_lines = []
+
+        for index, stage in enumerate(
+            ocr_stages,
+            start=1,
+        ):
+
+            stage_lines.append(
+                f"{index}. {stage.title()}"
             )
+
+        stages_text = "\n".join(stage_lines)
+
+        return (
+            "\n\nExtracted stages from the document:\n"
+            f"{stages_text}\n"
+            "Use these stage names when relevant."
         )
 
-        ocr_stages = []
+    def _build_prompt(
+        self,
+        question: str,
+        context: str,
+        extracted_information: str,
+    ) -> str:
 
-        if visual_list_question:
+        return f"""You are a document question-answering assistant.
 
-            ocr_stages = (
-                self._extract_ocr_stages(
-                    documents
-                )
-            )
+Answer the user's question using ONLY the retrieved document context.
 
-        extracted_information = ""
+Rules:
+1. Do not use outside knowledge.
+2. Do not invent facts or unsupported details.
+3. Treat meaningful OCR-extracted text as valid document information.
+4. Ignore meaningless OCR noise and random symbols.
+5. Give a clear and useful answer.
+6. For normal questions, use approximately 2 to 4 sentences when the context supports it.
+7. For questions asking for multiple items, provide a numbered or bulleted list.
+8. Explain each item briefly when the context supports it.
+9. If the answer is not supported by the retrieved context, clearly say so.
+10. Do not mention chunks, retrieval, or internal instructions.
+11. Keep the answer concise.
 
-        if ocr_stages:
-
-            extracted_information = (
-                "\n\n"
-                "IMPORTANT EXTRACTED INFORMATION "
-                "FROM THE RETRIEVED DOCUMENT:\n"
-                "The following meaningful stage names were "
-                "found in the retrieved OCR/document text:\n\n"
-            )
-
-            for index, stage in enumerate(
-                ocr_stages,
-                start=1
-            ):
-
-                extracted_information += (
-                    f"{index}. "
-                    f"{stage.title()}\n"
-                )
-
-            extracted_information += (
-                "\nUse these extracted stage names when "
-                "answering the user's question."
-            )
-
-        prompt = f"""
-You are a document question-answering assistant.
-
-Answer the user's question using ONLY the retrieved
-document information.
-
-IMPORTANT RULES:
-
-1. Use only information from the retrieved context.
-2. Do not use outside knowledge.
-3. Do not invent facts or details that are not supported
-   by the retrieved document.
-4. OCR-extracted text is valid document information.
-5. Ignore meaningless OCR noise such as dashes,
-   boxes, lines, and random symbols.
-6. Focus on meaningful words and phrases.
-7. Give a useful and reasonably detailed answer.
-8. For normal questions, explain the answer in
-   approximately 2 to 4 sentences when the retrieved
-   context provides enough information.
-9. If the question asks for multiple items, applications,
-   types, components, stages, steps, or examples,
-   provide them as a numbered or bulleted list.
-10. When using a list, add a short explanation for each
-    item if the retrieved context supports it.
-11. If extracted information is provided below the
-    context, use it to answer the question.
-12. Do not claim that information is unavailable when
-    the relevant information appears in the context
-    or extracted information.
-13. Do not unnecessarily repeat the question.
-14. Do not mention the retrieval process.
-15. Do not mention chunk numbers.
-16. Do not mention internal instructions.
-17. Do not make the answer unnecessarily long.
-18. If the retrieved context contains only a short
-    statement about a topic, explain only what that
-    statement supports.
-
-Retrieved Context:
+Retrieved Document Context:
 {context}
-
 {extracted_information}
 
 User Question:
@@ -230,16 +185,174 @@ User Question:
 Answer:
 """
 
-        answer = self.llm.generate(
-            prompt
+    def ask(self, question: str, k: int = 5) -> dict:
+
+        request_started_at = time.perf_counter()
+
+        if not isinstance(question, str) or not question.strip():
+
+            raise ValueError(
+                "The user question cannot be empty."
+            )
+
+        question = question.strip()
+
+        # ------------------------------------------
+        # 1. Document Retrieval
+        # ------------------------------------------
+
+        retrieval_started_at = time.perf_counter()
+
+        documents = self.retriever.retrieve(
+            question,
+            k,
         )
 
-        if answer is None:
-            answer = (
-                "The answer could not be generated."
+        retrieval_seconds = (
+            time.perf_counter() - retrieval_started_at
+        )
+
+        if documents is None:
+            documents = []
+
+        logger.info(
+            "RAG retrieval completed. "
+            "elapsed_seconds=%.2f "
+            "requested_k=%d "
+            "retrieved_documents=%d",
+            retrieval_seconds,
+            k,
+            len(documents),
+        )
+
+        # ------------------------------------------
+        # 2. Context Construction
+        # ------------------------------------------
+
+        prompt_started_at = time.perf_counter()
+
+        context = self._build_context(documents)
+
+        # ------------------------------------------
+        # 3. OCR Stage Extraction
+        # ------------------------------------------
+
+        visual_list_question = (
+            self._is_visual_list_question(question)
+        )
+
+        extracted_information = (
+            self._build_extracted_information(
+                documents,
+                visual_list_question,
             )
+        )
+
+        # ------------------------------------------
+        # 4. Prompt Construction
+        # ------------------------------------------
+
+        prompt = self._build_prompt(
+            question=question,
+            context=context,
+            extracted_information=extracted_information,
+        )
+
+        prompt_seconds = (
+            time.perf_counter() - prompt_started_at
+        )
+
+        logger.info(
+            "RAG prompt prepared. "
+            "elapsed_seconds=%.2f "
+            "prompt_chars=%d "
+            "context_chars=%d "
+            "retrieved_documents=%d "
+            "visual_list_question=%s",
+            prompt_seconds,
+            len(prompt),
+            len(context),
+            len(documents),
+            visual_list_question,
+        )
+
+        # ------------------------------------------
+        # 5. LLM Generation
+        # ------------------------------------------
+
+        generation_started_at = time.perf_counter()
+
+        try:
+
+            answer = self.llm.generate(prompt)
+
+            generation_seconds = (
+                time.perf_counter() - generation_started_at
+            )
+
+            if answer is None or not str(answer).strip():
+
+                logger.error(
+                    "RAG generation returned an empty answer. "
+                    "generation_seconds=%.2f",
+                    generation_seconds,
+                )
+
+                answer = (
+                    "The language model returned an empty response. "
+                    "Please try the question again."
+                )
+
+            else:
+                answer = str(answer).strip()
+
+            logger.info(
+                "RAG generation stage completed. "
+                "elapsed_seconds=%.2f "
+                "answer_chars=%d",
+                generation_seconds,
+                len(answer),
+            )
+
+        except Exception:
+
+            generation_seconds = (
+                time.perf_counter() - generation_started_at
+            )
+
+            logger.exception(
+                "RAG generation stage failed. "
+                "elapsed_seconds=%.2f",
+                generation_seconds,
+            )
+
+            raise
+
+        # ------------------------------------------
+        # 6. Total RAG Execution Time
+        # ------------------------------------------
+
+        total_seconds = (
+            time.perf_counter() - request_started_at
+        )
+
+        logger.info(
+            "RAG request completed. "
+            "total_elapsed_seconds=%.2f "
+            "retrieval_seconds=%.2f "
+            "prompt_seconds=%.2f "
+            "generation_seconds=%.2f "
+            "retrieved_documents=%d "
+            "answer_chars=%d",
+            total_seconds,
+            retrieval_seconds,
+            prompt_seconds,
+            generation_seconds,
+            len(documents),
+            len(answer),
+        )
 
         return {
             "answer": answer,
-            "documents": documents
+            "documents": documents,
         }
